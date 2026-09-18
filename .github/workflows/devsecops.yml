@@ -58,6 +58,13 @@ jobs:
           jf rt ping
           jf apptrust ping
 
+      # Materialize the evidence signing key for jf evd create (test-results predicate).
+      - name: Setup evidence signing key
+        run: |
+          printf '%s\n' "${{ secrets.EVIDENCE_PRIVATE_KEY }}" > evidence.key
+          chmod 600 evidence.key
+          openssl pkey -in evidence.key -check -noout
+
       # Resolve dependencies through the Curation-monitored virtual repo and set
       # the npm publish target. Every package is evaluated by Curation on the way in (req 1).
       - name: Point npm at Artifactory
@@ -78,7 +85,9 @@ jobs:
 
       # Build correctness gate — the only intentional hard failure in this workflow.
       - name: Run tests
-        run: npm test
+        run: |
+          mkdir -p test-results
+          npm run test:ci
 
       # Pack and publish the npm package to the DEV-stage-mapped local repo (req 10).
       # Do not use --scan; it skips upload on vulnerabilities (blocking behaviour).
@@ -88,6 +97,24 @@ jobs:
             --build-name="${BUILD_NAME}" \
             --build-number="${BUILD_NUMBER}" \
             --project="${JF_PROJECT}"
+
+      # Attach signed test-results evidence to the published npm package version.
+      - name: Attach test-results evidence to npm package
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          node scripts/junit-to-evidence.mjs
+
+          jf evd create \
+            --package-name "${BUILD_NAME}" \
+            --package-version "${PKG_VERSION}" \
+            --package-repo-name devsecops-npm-dev-local \
+            --project "${JF_PROJECT}" \
+            --predicate test-results/predicate.json \
+            --predicate-type https://jfrog.com/evidence/test-results/v1 \
+            --markdown test-results/summary.md \
+            --provider-id junit \
+            --key ./evidence.key \
+            --key-alias "${{ vars.EVIDENCE_KEY_ALIAS }}"
 
       # Remove devDependencies before the Docker image is built (production node_modules only).
       - name: Prune dev dependencies

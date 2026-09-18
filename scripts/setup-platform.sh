@@ -317,8 +317,10 @@ create_policy() {
 
 SLSA_RULE=$(create_rule "${PROJECT}-require-slsa-provenance" "https://slsa.dev/provenance/v1")
 SARIF_RULE=$(create_rule "${PROJECT}-require-xray-sarif" "https://jfrog.com/evidence/xray-sarif/v1")
+TEST_RULE=$(create_rule "${PROJECT}-require-test-results" "https://jfrog.com/evidence/test-results/v1")
 
 create_policy "${PROJECT}-qa-entry-slsa-gate" "QA" "entry" "$SLSA_RULE"
+create_policy "${PROJECT}-qa-entry-test-gate" "QA" "entry" "$TEST_RULE"
 create_policy "${PROJECT}-prod-release-sarif-gate" "PROD" "release" "$SARIF_RULE"
 
 # --- 9. Curation waivers for Docker base image (node:20-alpine) ---

@@ -2,7 +2,7 @@
 
 A small Express service that ships as both an npm package and a Docker image. Two GitHub Actions workflows on [tomjpd2.jfrog.io](https://tomjpd2.jfrog.io) exercise the **`devsecops`** JFrog Project: one runs **shift-left security checks** on feature branches, the other **builds, publishes, and promotes** through AppTrust lifecycle stages on `main`.
 
-Both workflows authenticate to JFrog via GitHub OIDC — no stored secrets.
+Both workflows authenticate to JFrog via GitHub OIDC. The main pipeline also uses a repository secret for evidence signing (`EVIDENCE_PRIVATE_KEY`); everything else is variable-driven.
 
 ## What the workflows do
 
@@ -66,27 +66,29 @@ For differential PR scanning, PR comments, and autofix, [Frogbot](https://docs.j
 1. **Checkout** the repository.
 2. **Authenticate to JFrog** via OIDC (`setup-jfrog-cli`). Every subsequent `jf` command runs in the context of the `devsecops` project.
 3. **Verify connectivity** with `jf rt ping` and `jf apptrust ping`.
-4. **Point npm at Artifactory** — dependencies resolve through `devsecops-npm-virtual`, which fronts a Curation-monitored remote (`devsecops-npm-remote`). Packages deploy to `devsecops-npm-dev-local`.
+4. **Setup evidence signing key** — materialize `EVIDENCE_PRIVATE_KEY` for `jf evd create`.
+5. **Point npm at Artifactory** — dependencies resolve through `devsecops-npm-virtual`, which fronts a Curation-monitored remote (`devsecops-npm-remote`). Packages deploy to `devsecops-npm-dev-local`.
 
 ### Dependency install and build
 
-5. **Install dependencies** (`jf npm install`) through the curated virtual repository. Each package is evaluated by Curation at resolution time — this is the live enforcement control on `main`.
-6. **Run tests** (`npm test`) — the only step that hard-fails the workflow on error.
-7. **Publish the npm package** (`jf npm publish`) to `devsecops-npm-dev-local`.
-8. **Prune dev dependencies** so the Docker image carries production packages only.
-9. **Build the Docker image** (`jf docker build`). The base image (`node:20-alpine`) resolves through `devsecops-docker-virtual`, which fronts a Curation-monitored Docker remote.
-10. **Scan the image locally** (`jf docker scan`) — OS-layer vulnerabilities and secrets in container layers.
-11. **Push the image** (`jf docker push`) to `devsecops-docker-dev-local`. The image and its layers are recorded in build-info.
+6. **Install dependencies** (`jf npm install`) through the curated virtual repository. Each package is evaluated by Curation at resolution time — this is the live enforcement control on `main`.
+7. **Run tests** (`npm run test:ci`) — executes the `node:test` suite, emits JUnit XML, and hard-fails the workflow on error.
+8. **Publish the npm package** (`jf npm publish`) to `devsecops-npm-dev-local`.
+9. **Attach test-results evidence** (`jf evd create`) — converts the JUnit report to a `https://jfrog.com/evidence/test-results/v1` predicate and attaches signed evidence to the published npm package.
+10. **Prune dev dependencies** so the Docker image carries production packages only.
+11. **Build the Docker image** (`jf docker build`). The base image (`node:20-alpine`) resolves through `devsecops-docker-virtual`, which fronts a Curation-monitored Docker remote.
+12. **Scan the image locally** (`jf docker scan`) — OS-layer vulnerabilities and secrets in container layers.
+13. **Push the image** (`jf docker push`) to `devsecops-docker-dev-local`. The image and its layers are recorded in build-info.
 
 ### Provenance, build-info, and build scan
 
-12. **Resolve the image digest** for the SLSA attestation subject.
-13. **Attest SLSA build provenance** (`actions/attest-build-provenance`) bound to the OCI image. The `setup-jfrog-cli` post-job automatically ingests the Sigstore bundle as JFrog Evidence.
-14. **Collect build environment** (`jf rt build-collect-env`) — CI runner metadata.
-15. **Attach git metadata** (`jf rt build-add-git`) — commit SHA, branch, message.
-16. **Publish build-info** (`jf rt build-publish`) to `devsecops-build-info`.
-17. **Scan the published build** (`jf build-scan`) — Xray evaluates the full artifact graph (npm package + Docker image + dependencies).
-18. **Verify build-info** is resolvable in the project-scoped repository before the release job starts.
+14. **Resolve the image digest** for the SLSA attestation subject.
+15. **Attest SLSA build provenance** (`actions/attest-build-provenance`) bound to the OCI image. The `setup-jfrog-cli` post-job automatically ingests the Sigstore bundle as JFrog Evidence.
+16. **Collect build environment** (`jf rt build-collect-env`) — CI runner metadata.
+17. **Attach git metadata** (`jf rt build-add-git`) — commit SHA, branch, message.
+18. **Publish build-info** (`jf rt build-publish`) to `devsecops-build-info`.
+19. **Scan the published build** (`jf build-scan`) — Xray evaluates the full artifact graph (npm package + Docker image + dependencies).
+20. **Verify build-info** is resolvable in the project-scoped repository before the release job starts.
 
 Source-level Xray audit (SCA, secrets, SAST) and Curation pre-install audit run on feature branches via **Shift Left Security**, not in this job.
 
@@ -96,9 +98,9 @@ Source-level Xray audit (SCA, secrets, SAST) and Curation pre-install audit run 
 
 Runs after the build job succeeds.
 
-19. **Create an application version** (`jf apptrust version-create`) for application `devsecops-node-api`, sourcing the build-info from step 16. The version is auto-assigned to the **DEV** stage because all artifacts reside in DEV-mapped repositories.
-20. **Promote to QA** (`jf apptrust version-promote … QA`) — artifacts are copied into QA-stage-mapped repositories. A Unified Policy gate at QA entry checks for **SLSA provenance evidence** on the Docker image (satisfied by step 13).
-21. **Release to PROD** (`jf apptrust version-release`) — artifacts are copied into PROD-stage-mapped repositories. A Unified Policy gate at PROD release checks for **Xray SARIF evidence** (intentionally unsatisfied in this demo, producing a warning that does not block the release).
+21. **Create an application version** (`jf apptrust version-create`) for application `devsecops-node-api`, sourcing the build-info from step 18. The version is auto-assigned to the **DEV** stage because all artifacts reside in DEV-mapped repositories.
+22. **Promote to QA** (`jf apptrust version-promote … QA`) — artifacts are copied into QA-stage-mapped repositories. Unified Policy gates at QA entry check for **SLSA provenance evidence** on the Docker image (satisfied by step 15) and **test-results evidence** on the npm package (satisfied by step 9).
+23. **Release to PROD** (`jf apptrust version-release`) — artifacts are copied into PROD-stage-mapped repositories. A Unified Policy gate at PROD release checks for **Xray SARIF evidence** (intentionally unsatisfied in this demo, producing a warning that does not block the release).
 
 Gate results are written to the GitHub Actions job summary.
 
@@ -108,8 +110,8 @@ Gate results are written to the GitHub Actions job summary.
 
 Runs in parallel with the release job. Does not affect the overall workflow result.
 
-22. Attempts to install `lodash@4.17.21` through the curated npm virtual repository. Curation blocks the package (Critical CVE) with a 403.
-23. Runs `jf curation-audit` on the blocked dependency set to surface the policy decision in the log.
+24. Attempts to install `lodash@4.17.21` through the curated npm virtual repository. Curation blocks the package (Critical CVE) with a 403.
+25. Runs `jf curation-audit` on the blocked dependency set to surface the policy decision in the log.
 
 This job illustrates the one control that *is* genuinely blocking in this environment: Curation's platform-wide policies reject packages with Critical CVEs, malicious content, immature releases, or missing licenses.
 
@@ -148,8 +150,9 @@ sequenceDiagram
     GHA->>JF: jf npmc (virtual repo + deploy target)
     GHA->>Cur: jf npm install (via curated remote)
     Cur-->>GHA: Packages permitted or blocked (403)
-    GHA->>GHA: npm test
+    GHA->>GHA: npm run test:ci (JUnit XML)
     GHA->>JF: jf npm publish → npm-dev-local (DEV)
+    GHA->>JF: jf evd create (test-results evidence on npm package)
     GHA->>JF: jf docker build (curated base image)
     GHA->>Xray: jf docker scan (image)
     Xray-->>GHA: Layer vulnerabilities
@@ -166,7 +169,7 @@ sequenceDiagram
     AT-->>GHA: Version assigned to DEV
     GHA->>AT: version-promote → QA
     AT->>JF: Copy artifacts to QA repos
-    AT-->>GHA: SLSA gate at QA entry — pass
+    AT-->>GHA: SLSA + test-results gates at QA entry — pass
     GHA->>AT: version-release → PROD
     AT->>JF: Copy artifacts to PROD repos
     AT-->>GHA: SARIF gate at PROD release — warning
@@ -228,6 +231,13 @@ Required repository variables:
 | `JF_PROJECT` | `devsecops` |
 | `JF_OIDC_PROVIDER` | `github-oidc-integration` |
 | `JF_OIDC_AUDIENCE` | `jfrog-github` |
+| `EVIDENCE_KEY_ALIAS` | `evidence-key` |
+
+Required repository secret:
+
+| Secret | Purpose |
+|--------|---------|
+| `EVIDENCE_PRIVATE_KEY` | Private key PEM matching the `EVIDENCE_KEY_ALIAS` trusted key in JFrog Platform |
 
 ---
 
@@ -237,6 +247,7 @@ Required repository variables:
 |-------|------|
 | GitHub → Actions → **Shift Left Security** | Curation table and Xray findings on feature branches |
 | Artifactory → `devsecops-npm-dev-local` | Published npm package |
+| Artifactory → `devsecops-npm-dev-local` → `devsecops-node-api` → Evidence | Signed test-results evidence (`Quality` category) on the npm package |
 | Artifactory → `devsecops-docker-dev-local` | Docker image tagged with the run number |
 | Artifactory → Builds → `devsecops-node-api` | Build-info with npm + Docker modules |
 | Xray → Violations | Build scan findings (main pipeline) |
@@ -277,6 +288,7 @@ In a real environment, **any one** of the following could be a legitimate hard s
 | Xray build scan | Violations across the full artifact graph | `jf build-scan --fail=true` |
 | Xray policy (platform) | Policy-matched violations on indexed artifacts | `fail_build: true` on the policy rule |
 | AppTrust QA entry gate | Missing SLSA provenance evidence | Unified Policy gate `mode: block` |
+| AppTrust QA entry gate | Missing test-results evidence on npm package | Unified Policy gate `mode: block` |
 | AppTrust PROD release gate | Missing Xray SARIF evidence | Unified Policy gate `mode: block` |
 
 When a control is blocking, the remediation path is to fix the finding (upgrade a dependency, remove a secret, patch the image). The alternative is a formal exception — for example a Curation waiver for a specific package version, or an AppTrust evidence waiver — with owner, expiry, and risk acceptance documented.
