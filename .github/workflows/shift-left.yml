@@ -1,0 +1,57 @@
+# Shift-left security — Curation and Xray source audits on feature branches.
+# Runs before the release pipeline; no build, publish, or build-info required.
+name: Shift Left Security
+
+on:
+  push:
+    branches: ["FEAT-*"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  JF_PROJECT: ${{ vars.JF_PROJECT }}
+
+jobs:
+  audit:
+    name: Curation and Xray audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # curation-audit shells out to npm for dependency resolution.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ vars.JF_URL }}
+          JF_PROJECT: ${{ vars.JF_PROJECT }}
+        with:
+          oidc-provider-name: ${{ vars.JF_OIDC_PROVIDER }}
+          oidc-audience: ${{ vars.JF_OIDC_AUDIENCE }}
+
+      # Resolve-only config — this workflow publishes nothing.
+      - name: Point npm at Artifactory
+        run: |
+          jf npmc --server-id-resolve setup-jfrog-cli-server \
+                  --repo-resolve devsecops-npm-virtual
+
+      # Observe-only: findings do not block the job.
+      - name: Curation audit
+        continue-on-error: true
+        run: jf curation-audit --format=table || true
+
+      - name: Xray audit (source)
+        continue-on-error: true
+        run: |
+          jf audit --sca --secrets --sast \
+            --project="${JF_PROJECT}" \
+            --extended-table \
+            --fail=false
