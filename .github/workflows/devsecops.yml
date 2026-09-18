@@ -203,8 +203,8 @@ jobs:
       # Assert build-info is resolvable in the project-scoped repo before AppTrust references it.
       - name: Verify build-info published
         run: |
-          jf api "/artifactory/api/build/${BUILD_NAME}/${BUILD_NUMBER}?project=${JF_PROJECT}" \
-            | jq -e '.buildInfo.name'
+          jf rt curl -sf "/api/build/${BUILD_NAME}/${BUILD_NUMBER}?project=${JF_PROJECT}" \
+            | jq -er '.buildInfo.name' >/dev/null
 
   release:
     name: AppTrust version lifecycle
