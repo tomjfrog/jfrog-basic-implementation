@@ -10,7 +10,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  security-events: write
 
 env:
   JF_PROJECT: ${{ vars.JF_PROJECT }}
@@ -56,30 +55,3 @@ jobs:
             --project="${JF_PROJECT}" \
             --extended-table \
             --fail=false
-
-      # Plumbing steps — no continue-on-error; export/upload failures must be visible.
-      - name: Prepare SARIF output directory
-        run: mkdir -p ./xray-results
-
-      - name: Xray audit (SARIF export)
-        run: |
-          jf audit --sca --secrets --sast \
-            --project="${JF_PROJECT}" \
-            --format=sarif \
-            --output-dir=./xray-results \
-            --fail=false
-
-      # jf audit writes applicability_*.sarif for Contextual Analysis; GitHub's
-      # upload-sarif validator rejects that schema. Upload SCA, secrets, and SAST only.
-      - name: Prepare SARIF for GitHub upload
-        run: |
-          mkdir -p ./sarif-upload
-          find ./xray-results -name '*.sarif' ! -name 'applicability_*' \
-            -exec cp {} ./sarif-upload/ \;
-          ls -la ./sarif-upload/
-
-      - name: Upload SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ./sarif-upload/
-          category: jfrog-xray-shift-left

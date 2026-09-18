@@ -14,7 +14,6 @@ Runs on pushes to `FEAT-*` branches (for example `FEAT-12345`) and via **workflo
 |-------|---------|---------|
 | Curation audit | `jf curation-audit` | Policy evaluation on the declared dependency tree |
 | Xray source audit | `jf audit --sca --secrets --sast` | SCA, Contextual Analysis, secrets, and SAST |
-| SARIF upload | `upload-sarif` | Findings in GitHub **Code scanning** |
 
 No `node_modules`, Docker image, or build-info is required — both audits resolve from the committed `package-lock.json` and first-party source. A typical run completes in about one minute.
 
@@ -56,8 +55,7 @@ For differential PR scanning, PR comments, and autofix, [Frogbot](https://docs.j
 2. **Authenticate to JFrog** via OIDC (`setup-jfrog-cli`).
 3. **Point npm at Artifactory** (resolve-only through `devsecops-npm-virtual`).
 4. **Curation audit** (`jf curation-audit`) — observe-only in this lab.
-5. **Xray source audit** (`jf audit --sca --secrets --sast`) — SCA, Contextual Analysis, secrets, SAST; observe-only.
-6. **Export SARIF** and upload to GitHub **Code scanning** (category `jfrog-xray-shift-left`).
+5. **Xray source audit** (`jf audit --sca --secrets --sast`) — SCA, Contextual Analysis, secrets, SAST; observe-only. Results appear in the workflow log and in Xray on the JFrog Platform.
 
 ---
 
@@ -140,7 +138,6 @@ sequenceDiagram
     Cur-->>GHA: Policy evaluation results
     GHA->>Xray: jf audit (SCA, CA, secrets, SAST)
     Xray-->>GHA: Vulnerabilities + applicability
-    GHA->>GHA: Upload SARIF to GitHub Code scanning
 
     Dev->>GHA: Merge to main (or workflow_dispatch)
 
@@ -239,7 +236,6 @@ Required repository variables:
 | Where | What |
 |-------|------|
 | GitHub → Actions → **Shift Left Security** | Curation table and Xray findings on feature branches |
-| GitHub → Security → Code scanning | SARIF from shift-left runs (category `jfrog-xray-shift-left`) |
 | Artifactory → `devsecops-npm-dev-local` | Published npm package |
 | Artifactory → `devsecops-docker-dev-local` | Docker image tagged with the run number |
 | Artifactory → Builds → `devsecops-node-api` | Build-info with npm + Docker modules |
