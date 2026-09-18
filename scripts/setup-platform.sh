@@ -321,4 +321,47 @@ SARIF_RULE=$(create_rule "${PROJECT}-require-xray-sarif" "https://jfrog.com/evid
 create_policy "${PROJECT}-qa-entry-slsa-gate" "QA" "entry" "$SLSA_RULE"
 create_policy "${PROJECT}-prod-release-sarif-gate" "PROD" "release" "$SARIF_RULE"
 
+# --- 9. Curation waivers for Docker base image (node:20-alpine) ---
+# Official Docker Hub images are cataloged as library/node. Without waivers,
+# block-unlicensed / block-immature policies block the base layer; Docker then
+# reports a misleading "manifest not found" through the virtual repo.
+ensure_docker_base_waivers() {
+  local policy_id="$1"
+  local policy_name="$2"
+  local condition_id="$3"
+
+  log "Ensuring Docker base-image waivers on ${policy_name}..."
+  local cur
+  cur=$(jf_api "/xray/api/v1/curation/policies/${policy_id}" 2>/dev/null || echo '{}')
+
+  local payload
+  payload=$(echo "$cur" | jq \
+    --arg name "$policy_name" \
+    --arg cond "$condition_id" \
+    --arg reason "DevSecOps demo base image (library/node:20-alpine)" \
+    '{
+      name: $name,
+      scope: "all_repos",
+      policy_action: "block",
+      condition_id: $cond,
+      waiver_request_config: "auto_approved",
+      waivers: (
+        (.waivers // [])
+        | map(select(.id != null) | {id, pkg_type, pkg_name, all_versions, pkg_versions, justification})
+        | . + [
+            {pkg_type: "Docker", pkg_name: "library/node", all_versions: true, justification: $reason},
+            {pkg_type: "Docker", pkg_name: "node", all_versions: true, justification: $reason}
+          ]
+        | unique_by(.pkg_name)
+      )
+    }')
+
+  jf_api -X PUT "/xray/api/v1/curation/policies/${policy_id}" \
+    -H "Content-Type: application/json" \
+    -d "$payload" >/dev/null
+}
+
+ensure_docker_base_waivers "6" "block-unlicensed" "8"
+ensure_docker_base_waivers "5" "block-immature" "14"
+
 log "Done. Project ${PROJECT} is ready on ${SID}."
