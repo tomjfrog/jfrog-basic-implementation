@@ -323,8 +323,9 @@ create_policy "${PROJECT}-prod-release-sarif-gate" "PROD" "release" "$SARIF_RULE
 
 # --- 9. Curation waivers for Docker base image (node:20-alpine) ---
 # Official Docker Hub images are cataloged as library/node. Without waivers,
-# block-unlicensed / block-immature policies block the base layer; Docker then
-# reports a misleading "manifest not found" through the virtual repo.
+# block-unlicensed / block-immature / block-critical-cves policies block the
+# base layer; Docker then reports a misleading "manifest not found" through
+# the virtual repo.
 ensure_docker_base_waivers() {
   local policy_id="$1"
   local policy_name="$2"
@@ -363,21 +364,23 @@ ensure_docker_base_waivers() {
 
 ensure_docker_base_waivers "6" "block-unlicensed" "8"
 ensure_docker_base_waivers "5" "block-immature" "14"
+ensure_docker_base_waivers "4" "block-critical-cves" "3"
 
 # --- 10. Seed approved base image into docker-dev-local ---
 # CI OIDC identities can read dev-local but may not pull uncached images through
 # the curated remote. The virtual repo checks dev-local first, so seeding here
 # lets jf docker pull/build resolve library/node:20-alpine without Docker Hub.
+# Publish linux/amd64 + linux/arm64 so GHA (amd64) and local dev (arm64) both work.
 seed_docker_base_image() {
   local registry="${JF_DOCKER_REGISTRY:-tomjpd2.jfrog.io}"
   local source="${registry}/${PROJECT}-docker-remote/library/node:20-alpine"
   local target="${registry}/${PROJECT}-docker-dev-local/library/node:20-alpine"
 
-  log "Seeding base image into ${PROJECT}-docker-dev-local..."
+  log "Seeding multi-arch base image into ${PROJECT}-docker-dev-local..."
   jf docker login "${registry}" >/dev/null 2>&1 || true
-  jf docker pull "${source}"
-  jf docker tag "${source}" "${target}"
-  jf docker push "${target}"
+  docker buildx imagetools create \
+    -t "${target}" "${source}" \
+    --platform linux/amd64,linux/arm64
 }
 
 seed_docker_base_image
