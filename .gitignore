@@ -3,6 +3,8 @@ npm-debug.log
 .DS_Store
 xray-results/
 test-results/
+evidence.key
+*.pem
 .env
 .jfrog/
 .npmrc

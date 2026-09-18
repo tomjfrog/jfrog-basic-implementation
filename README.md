@@ -73,7 +73,7 @@ For differential PR scanning, PR comments, and autofix, [Frogbot](https://docs.j
 
 6. **Install dependencies** (`jf npm install`) through the curated virtual repository. Each package is evaluated by Curation at resolution time — this is the live enforcement control on `main`.
 7. **Run tests** (`npm run test:ci`) — executes the `node:test` suite, emits JUnit XML, and hard-fails the workflow on error.
-8. **Publish the npm package** (`jf npm publish`) to `devsecops-npm-dev-local`.
+8. **Publish the npm package** (`jf npm publish`) to `devsecops-npm-dev-local`. The semver is bumped to `APP_VERSION` (`1.0.<run_number>`) before publish so each run produces a distinct package version.
 9. **Attach test-results evidence** (`jf evd create`) — converts the JUnit report to a `https://jfrog.com/evidence/test-results/v1` predicate and attaches signed evidence to the published npm package.
 10. **Prune dev dependencies** so the Docker image carries production packages only.
 11. **Build the Docker image** (`jf docker build`). The base image (`node:20-alpine`) resolves through `devsecops-docker-virtual`, which fronts a Curation-monitored Docker remote.

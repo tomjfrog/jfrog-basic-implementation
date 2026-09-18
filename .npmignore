@@ -1,0 +1,7 @@
+.github/
+test/
+test-results/
+scripts/
+evidence.key
+*.key
+*.pem
