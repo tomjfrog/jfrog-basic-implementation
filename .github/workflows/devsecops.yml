@@ -22,7 +22,7 @@ env:
   BUILD_NUMBER: ${{ github.run_number }}
   APP_VERSION: ${{ inputs.app_version || format('1.0.{0}', github.run_number) }}
   IMAGE: ${{ vars.JF_DOCKER_REGISTRY }}/devsecops-docker-dev-local/devsecops-node-api:${{ github.run_number }}
-  BASE_IMAGE: ${{ vars.JF_DOCKER_REGISTRY }}/devsecops-docker-virtual/library/node:20-alpine
+  BASE_IMAGE: ${{ vars.JF_DOCKER_REGISTRY }}/devsecops-docker-dev-local/library/node:20-alpine
 
 jobs:
   build:
@@ -131,8 +131,9 @@ jobs:
       - name: Docker login
         run: jf docker login "${{ vars.JF_DOCKER_REGISTRY }}"
 
-      # Pre-pull the curated base image so buildkit resolves a fresh manifest (Curation
-      # blocks surface as "manifest not found" through the virtual repo).
+      # Pre-pull the seeded base image from dev-local (OIDC-safe). The Dockerfile
+      # still resolves through docker-virtual; dev-local is a member repo so the
+      # virtual FROM line hits this copy without a curated-remote pull in CI.
       - name: Pull base image
         run: jf docker pull "${BASE_IMAGE}"
 

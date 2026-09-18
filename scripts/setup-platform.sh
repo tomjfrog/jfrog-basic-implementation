@@ -364,4 +364,22 @@ ensure_docker_base_waivers() {
 ensure_docker_base_waivers "6" "block-unlicensed" "8"
 ensure_docker_base_waivers "5" "block-immature" "14"
 
+# --- 10. Seed approved base image into docker-dev-local ---
+# CI OIDC identities can read dev-local but may not pull uncached images through
+# the curated remote. The virtual repo checks dev-local first, so seeding here
+# lets jf docker pull/build resolve library/node:20-alpine without Docker Hub.
+seed_docker_base_image() {
+  local registry="${JF_DOCKER_REGISTRY:-tomjpd2.jfrog.io}"
+  local source="${registry}/${PROJECT}-docker-remote/library/node:20-alpine"
+  local target="${registry}/${PROJECT}-docker-dev-local/library/node:20-alpine"
+
+  log "Seeding base image into ${PROJECT}-docker-dev-local..."
+  jf docker login "${registry}" >/dev/null 2>&1 || true
+  jf docker pull "${source}"
+  jf docker tag "${source}" "${target}"
+  jf docker push "${target}"
+}
+
+seed_docker_base_image
+
 log "Done. Project ${PROJECT} is ready on ${SID}."
