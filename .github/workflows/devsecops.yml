@@ -145,20 +145,26 @@ jobs:
 
       # Push to DEV-stage-mapped docker repo and record image + layers in build-info (req 9).
       - name: Push Docker image
+        id: push
         run: |
           jf docker push "${IMAGE}" \
             --build-name="${BUILD_NAME}" \
             --build-number="${BUILD_NUMBER}" \
             --project="${JF_PROJECT}"
 
-      # Resolve manifest digest via JFrog CLI for the SLSA attestation subject (req 8).
-      - name: Resolve image digest
-        id: digest
-        run: |
-          SHA=$(jf api \
-            "/artifactory/api/storage/devsecops-docker-dev-local/devsecops-node-api/${BUILD_NUMBER}/manifest.json" \
-            | jq -r '.checksums.sha256')
-          echo "digest=sha256:${SHA}" >> "$GITHUB_OUTPUT"
+          # OCI manifest digest for SLSA attestation (req 8). Use the local image
+          # reference — RepoDigests is populated after push. Avoid jf api | jq here;
+          # storage API file checksums differ from the manifest digest and the CLI
+          # log line on stdout breaks jq in CI.
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}" | cut -d@ -f2)
+          if [ -z "$DIGEST" ]; then
+            DIGEST=$(docker inspect --format='{{.Id}}' "${IMAGE}")
+          fi
+          if [ -z "$DIGEST" ]; then
+            echo "Failed to resolve OCI digest for ${IMAGE}" >&2
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       # Create GitHub SLSA build provenance attestation bound to the OCI image.
       # setup-jfrog-cli post-job auto-runs: jf evd create --sigstore-bundle ... --provider-id github
@@ -166,7 +172,7 @@ jobs:
         uses: actions/attest-build-provenance@v3
         with:
           subject-name: oci://${{ vars.JF_DOCKER_REGISTRY }}/devsecops-docker-dev-local/devsecops-node-api
-          subject-digest: ${{ steps.digest.outputs.digest }}
+          subject-digest: ${{ steps.push.outputs.digest }}
 
       # Collect CI environment variables into build-info (req 5).
       - name: Collect build environment
