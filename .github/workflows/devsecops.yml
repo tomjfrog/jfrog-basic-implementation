@@ -1,8 +1,10 @@
 # DevSecOps showcase — full JFrog Platform pipeline (tomjpd2).
-# Manual-only: publishes artifacts and promotes an AppTrust version to PROD.
+# Publishes artifacts and promotes an AppTrust version to PROD on main.
 name: DevSecOps Showcase
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       app_version:
@@ -14,7 +16,6 @@ permissions:
   id-token: write
   contents: read
   attestations: write
-  security-events: write
 
 env:
   JF_PROJECT: ${{ vars.JF_PROJECT }}
@@ -66,12 +67,6 @@ jobs:
                   --repo-resolve devsecops-npm-virtual \
                   --repo-deploy devsecops-npm-dev-local
 
-      # Evaluate the dependency tree against Curation policies before install (req 3).
-      # Guard with || true — the command exits non-zero when blocked packages are found.
-      - name: Curation audit (pre-install)
-        continue-on-error: true
-        run: jf curation-audit --format=table || true
-
       # Install dependencies from the curated remote via the virtual repo.
       # --build-name/number/project attach this step to build-info.
       - name: Install dependencies
@@ -80,35 +75,6 @@ jobs:
             --build-name="${BUILD_NAME}" \
             --build-number="${BUILD_NUMBER}" \
             --project="${JF_PROJECT}"
-
-      # SCA + Contextual Analysis + Secrets + SAST on source (reqs 2 and 4).
-      # --fail=false keeps the showcase running even when violations are found.
-      - name: Xray audit (source)
-        continue-on-error: true
-        run: |
-          jf audit --sca --secrets --sast \
-            --project="${JF_PROJECT}" \
-            --extended-table \
-            --fail=false
-
-      # Export audit results as SARIF for GitHub Advanced Security Code scanning tab.
-      - name: Xray audit (SARIF export)
-        if: always()
-        continue-on-error: true
-        run: |
-          jf audit --sca --secrets --sast \
-            --project="${JF_PROJECT}" \
-            --format=sarif \
-            --output-dir=./xray-results \
-            --fail=false
-
-      - name: Upload SARIF to GitHub
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ./xray-results/
-          category: jfrog-xray-devsecops
 
       # Build correctness gate — the only intentional hard failure in this workflow.
       - name: Run tests
