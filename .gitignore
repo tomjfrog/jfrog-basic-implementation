@@ -1,0 +1,7 @@
+node_modules/
+npm-debug.log
+.DS_Store
+xray-results/
+.env
+.jfrog/
+.npmrc

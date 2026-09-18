@@ -1,0 +1,22 @@
+{
+  "name": "devsecops-node-api",
+  "version": "1.0.0",
+  "description": "DevSecOps showcase Node.js API for JFrog Platform demo",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "json5": "2.2.0",
+    "moment": "2.29.1",
+    "semver": "7.3.7"
+  },
+  "devDependencies": {
+    "supertest": "7.0.0"
+  }
+}

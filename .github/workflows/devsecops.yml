@@ -1,0 +1,271 @@
+# DevSecOps showcase — full JFrog Platform pipeline (tomjpd2).
+# Manual-only: publishes artifacts and promotes an AppTrust version to PROD.
+name: DevSecOps Showcase
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "AppTrust version (SemVer). Defaults to 1.0.<run_number>."
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  attestations: write
+  security-events: write
+
+env:
+  JF_PROJECT: ${{ vars.JF_PROJECT }}
+  BUILD_NAME: devsecops-node-api
+  BUILD_NUMBER: ${{ github.run_number }}
+  APP_VERSION: ${{ inputs.app_version || format('1.0.{0}', github.run_number) }}
+  IMAGE: ${{ vars.JF_DOCKER_REGISTRY }}/devsecops-docker-dev-local/devsecops-node-api:${{ github.run_number }}
+
+jobs:
+  build:
+    name: Build, scan, and publish
+    runs-on: ubuntu-latest
+    steps:
+      # Source checkout — required for jf rt build-add-git and npm test.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node runtime for npm test (dependencies resolved via jf npm, not npmjs.org).
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Exchange GitHub OIDC token for a short-lived JFrog access token.
+      # JF_PROJECT scopes every subsequent jf command to the devsecops project (req 7).
+      - name: Setup JFrog CLI
+        id: jfrog-cli
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ vars.JF_URL }}
+          JF_PROJECT: ${{ vars.JF_PROJECT }}
+        with:
+          oidc-provider-name: ${{ vars.JF_OIDC_PROVIDER }}
+          oidc-audience: ${{ vars.JF_OIDC_AUDIENCE }}
+
+      # Cheap auth assertion — fails fast with a clear message if OIDC mapping is wrong.
+      - name: Verify JFrog connectivity
+        run: |
+          jf rt ping
+          jf apptrust ping
+
+      # Resolve dependencies through the Curation-monitored virtual repo and set
+      # the npm publish target. Every package is evaluated by Curation on the way in (req 1).
+      - name: Point npm at Artifactory
+        run: |
+          jf npmc --server-id-resolve setup-jfrog-cli-server \
+                  --server-id-deploy setup-jfrog-cli-server \
+                  --repo-resolve devsecops-npm-virtual \
+                  --repo-deploy devsecops-npm-dev-local
+
+      # Evaluate the dependency tree against Curation policies before install (req 3).
+      # Guard with || true — the command exits non-zero when blocked packages are found.
+      - name: Curation audit (pre-install)
+        continue-on-error: true
+        run: jf curation-audit --format=table || true
+
+      # Install dependencies from the curated remote via the virtual repo.
+      # --build-name/number/project attach this step to build-info.
+      - name: Install dependencies
+        run: |
+          jf npm install \
+            --build-name="${BUILD_NAME}" \
+            --build-number="${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}"
+
+      # SCA + Contextual Analysis + Secrets + SAST on source (reqs 2 and 4).
+      # --fail=false keeps the showcase running even when violations are found.
+      - name: Xray audit (source)
+        continue-on-error: true
+        run: |
+          jf audit --sca --secrets --sast \
+            --project="${JF_PROJECT}" \
+            --extended-table \
+            --fail=false
+
+      # Export audit results as SARIF for GitHub Advanced Security Code scanning tab.
+      - name: Xray audit (SARIF export)
+        if: always()
+        continue-on-error: true
+        run: |
+          jf audit --sca --secrets --sast \
+            --project="${JF_PROJECT}" \
+            --format=sarif \
+            --output-dir=./xray-results \
+            --fail=false
+
+      - name: Upload SARIF to GitHub
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ./xray-results/
+          category: jfrog-xray-devsecops
+
+      # Build correctness gate — the only intentional hard failure in this workflow.
+      - name: Run tests
+        run: npm test
+
+      # Pack and publish the npm package to the DEV-stage-mapped local repo (req 10).
+      # Do not use --scan; it skips upload on vulnerabilities (blocking behaviour).
+      - name: Publish npm package
+        run: |
+          jf npm publish \
+            --build-name="${BUILD_NAME}" \
+            --build-number="${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}"
+
+      # Remove devDependencies before the Docker image is built (production node_modules only).
+      - name: Prune dev dependencies
+        run: npm prune --omit=dev
+
+      # Authenticate Docker to the Artifrog registry using the OIDC-derived CLI config.
+      - name: Docker login
+        run: jf docker login "${{ vars.JF_DOCKER_REGISTRY }}"
+
+      # Build the container image. Base layer resolves through devsecops-docker-virtual (curated).
+      - name: Build Docker image
+        run: jf docker build -t "${IMAGE}" .
+
+      # Pre-push image scan — OS layers and secrets. Observe-only (--fail=false).
+      - name: Xray scan (Docker image)
+        continue-on-error: true
+        run: |
+          jf docker scan "${IMAGE}" \
+            --project="${JF_PROJECT}" \
+            --fail=false \
+            --extended-table
+
+      # Push to DEV-stage-mapped docker repo and record image + layers in build-info (req 9).
+      - name: Push Docker image
+        run: |
+          jf docker push "${IMAGE}" \
+            --build-name="${BUILD_NAME}" \
+            --build-number="${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}"
+
+      # Resolve manifest digest via JFrog CLI for the SLSA attestation subject (req 8).
+      - name: Resolve image digest
+        id: digest
+        run: |
+          SHA=$(jf api \
+            "/artifactory/api/storage/devsecops-docker-dev-local/devsecops-node-api/${BUILD_NUMBER}/manifest.json" \
+            | jq -r '.checksums.sha256')
+          echo "digest=sha256:${SHA}" >> "$GITHUB_OUTPUT"
+
+      # Create GitHub SLSA build provenance attestation bound to the OCI image.
+      # setup-jfrog-cli post-job auto-runs: jf evd create --sigstore-bundle ... --provider-id github
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: oci://${{ vars.JF_DOCKER_REGISTRY }}/devsecops-docker-dev-local/devsecops-node-api
+          subject-digest: ${{ steps.digest.outputs.digest }}
+
+      # Collect CI environment variables into build-info (req 5).
+      - name: Collect build environment
+        run: |
+          jf rt build-collect-env "${BUILD_NAME}" "${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}"
+
+      # Attach git commit metadata to build-info (req 5).
+      - name: Add git metadata
+        run: |
+          jf rt build-add-git "${BUILD_NAME}" "${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}"
+
+      # Publish build-info to devsecops-build-info (req 5).
+      - name: Publish build-info
+        run: |
+          jf rt build-publish "${BUILD_NAME}" "${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}"
+
+      # Scan the published build against Xray policies. Observe-only (--fail=false) (req 6).
+      - name: Xray build scan
+        continue-on-error: true
+        run: |
+          jf build-scan "${BUILD_NAME}" "${BUILD_NUMBER}" \
+            --project="${JF_PROJECT}" \
+            --fail=false
+
+      # Assert build-info is resolvable in the project-scoped repo before AppTrust references it.
+      - name: Verify build-info published
+        run: |
+          jf api "/artifactory/api/build/${BUILD_NAME}/${BUILD_NUMBER}?project=${JF_PROJECT}" \
+            | jq -e '.buildInfo.name'
+
+  release:
+    name: AppTrust version lifecycle
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ vars.JF_URL }}
+          JF_PROJECT: ${{ vars.JF_PROJECT }}
+        with:
+          oidc-provider-name: ${{ vars.JF_OIDC_PROVIDER }}
+          oidc-audience: ${{ vars.JF_OIDC_AUDIENCE }}
+
+      # Assemble an AppTrust application version from the published build-info (req 11).
+      # repo-key is mandatory — default artifactory-build-info would 404 for project-scoped builds.
+      - name: Create application version
+        run: |
+          jf apptrust version-create devsecops-node-api "${APP_VERSION}" \
+            --source-type-builds="name=${BUILD_NAME}, id=${BUILD_NUMBER}, repo-key=${JF_PROJECT}-build-info" \
+            --skip-unassigned=true \
+            --tag="${GITHUB_SHA}" \
+            --format=json | tee version-create.json
+
+      # Promote DEV -> QA (non-prod to non-prod). Crosses warning-mode SLSA gate at QA entry.
+      - name: Promote to QA
+        run: |
+          jf apptrust version-promote devsecops-node-api "${APP_VERSION}" QA \
+            --format=json | tee version-promote-qa.json
+          echo "### AppTrust promote QA" >> "$GITHUB_STEP_SUMMARY"
+          cat version-promote-qa.json >> "$GITHUB_STEP_SUMMARY"
+
+      # Release to PROD. Crosses warning-mode SARIF gate (intentionally unsatisfied).
+      - name: Release to PROD
+        run: |
+          jf apptrust version-release devsecops-node-api "${APP_VERSION}" \
+            --format=json | tee version-release-prod.json
+          echo "### AppTrust release PROD" >> "$GITHUB_STEP_SUMMARY"
+          cat version-release-prod.json >> "$GITHUB_STEP_SUMMARY"
+
+  curation-demo:
+    name: Curation block demonstration
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ vars.JF_URL }}
+          JF_PROJECT: ${{ vars.JF_PROJECT }}
+        with:
+          oidc-provider-name: ${{ vars.JF_OIDC_PROVIDER }}
+          oidc-audience: ${{ vars.JF_OIDC_AUDIENCE }}
+
+      # Isolated demo: lodash@4.17.21 carries Critical CVE-2026-4800 and is blocked by Curation.
+      # continue-on-error on the job keeps the overall workflow green.
+      - name: Attempt blocked package install
+        run: |
+          mkdir -p /tmp/curation-demo && cd /tmp/curation-demo
+          echo '{"name":"curation-demo","version":"1.0.0"}' > package.json
+          jf npmc --server-id-resolve setup-jfrog-cli-server \
+                  --repo-resolve devsecops-npm-virtual
+          jf npm install lodash@4.17.21 || echo "Expected Curation block (403)"
+
+      - name: Curation audit on blocked package
+        run: |
+          cd /tmp/curation-demo
+          jf curation-audit --format=table || true
